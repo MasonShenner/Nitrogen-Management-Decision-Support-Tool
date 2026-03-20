@@ -227,6 +227,7 @@ def prepare_point_map_data(gdf):
     """
     Converts shapefile geometry into lat/lon for point-based plotting.
     Supports Point and MultiPoint. Falls back to centroid if needed.
+    Also forces numeric plotting fields to avoid dtype/category issues.
     """
     plot_gdf = gdf.copy()
 
@@ -246,6 +247,12 @@ def prepare_point_map_data(gdf):
     else:
         plot_gdf["lon"] = plot_gdf.geometry.centroid.x
         plot_gdf["lat"] = plot_gdf.geometry.centroid.y
+
+    # force numeric map columns
+    numeric_cols = ["lat", "lon", "Yield", "NitrogenRate", "AI_N_Rate", "N_Change"]
+    for col in numeric_cols:
+        if col in plot_gdf.columns:
+            plot_gdf[col] = pd.to_numeric(plot_gdf[col], errors="coerce")
 
     plot_gdf = plot_gdf.dropna(subset=["lat", "lon"]).copy()
     return plot_gdf
