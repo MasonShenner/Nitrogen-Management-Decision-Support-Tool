@@ -222,30 +222,45 @@ def add_kpi(label, value, color="#f9fafb"):
         unsafe_allow_html=True
     )
 
-# ---------------------------------
-# Upload section
-# ---------------------------------
 st.markdown('<div class="section-card">', unsafe_allow_html=True)
-st.subheader("Upload Field Data")
+st.subheader("Nitrogen Rate by Yield Class")
 
-upload_col1, upload_col2 = st.columns(2)
+fig_n = go.Figure()
 
-with upload_col1:
-    n_file = st.file_uploader(
-        "Upload Nitrogen Prescription File",
-        type=["csv", "xlsx", "xls", "zip"]
+fig_n.add_trace(
+    go.Bar(
+        x=summary_display["Yield Class"],
+        y=summary_display["N Rate (lb/ac)"],
+        name="Original N Rate",
+        text=summary_display["N Rate (lb/ac)"],
+        textposition="outside"
     )
-
-with upload_col2:
-    y_file = st.file_uploader(
-        "Upload Yield Data File",
-        type=["csv", "xlsx", "xls", "zip"]
-    )
-
-st.markdown(
-    '<div class="small-note">Accepted file types: CSV, Excel, and ZIP exports including shapefiles.</div>',
-    unsafe_allow_html=True
 )
+
+fig_n.add_trace(
+    go.Bar(
+        x=ai_display["Yield Class"],
+        y=ai_display["AI N Rate (lb/ac)"],
+        name="AI N Rate",
+        text=ai_display["AI N Rate (lb/ac)"],
+        textposition="outside"
+    )
+)
+
+fig_n.update_layout(
+    barmode="group",
+    height=430,
+    xaxis_title="Yield Class",
+    yaxis_title="Nitrogen Rate (lb/ac)",
+    margin=dict(l=20, r=20, t=20, b=20)
+)
+
+st.plotly_chart(
+    fig_n,
+    use_container_width=True,
+    config={"displayModeBar": False}
+)
+
 st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------
