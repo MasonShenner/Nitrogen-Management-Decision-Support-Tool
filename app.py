@@ -299,7 +299,7 @@ def build_point_map(
         if col in plot_df.columns:
             plot_df[col] = pd.to_numeric(plot_df[col], errors="coerce")
 
-    plot_df = plot_df.dropna(subset=["lat", "lon", value_column"]).copy()
+    plot_df = plot_df.dropna(subset=["lat", "lon", value_column]).copy()
 
     if plot_df.empty:
         return None
