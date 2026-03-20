@@ -94,7 +94,7 @@ st.markdown(
         background: #0f172a;
         border: 1px solid rgba(255,255,255,0.08);
         border-radius: 18px;
-        padding: 1rem 1rem 0.5rem 1rem;
+        padding: 1rem 1rem 0.75rem 1rem;
         margin-bottom: 1rem;
     }
 
@@ -141,34 +141,28 @@ st.markdown(
 )
 
 # ---------------------------------
-# Helper: clean column names
+# Helpers
 # ---------------------------------
 def clean_columns(df):
     df.columns = [str(col).strip() for col in df.columns]
     return df
 
-# ---------------------------------
-# Helper: read CSV / Excel / ZIP / Shapefile
-# ---------------------------------
 def read_uploaded_file(uploaded_file):
     if uploaded_file is None:
         return None, "No file uploaded."
 
     file_name = uploaded_file.name.lower()
 
-    # CSV
     if file_name.endswith(".csv"):
         df = pd.read_csv(uploaded_file)
         df = clean_columns(df)
         return df, "CSV file loaded successfully."
 
-    # Excel
     if file_name.endswith(".xlsx") or file_name.endswith(".xls"):
         df = pd.read_excel(uploaded_file)
         df = clean_columns(df)
         return df, "Excel file loaded successfully."
 
-    # ZIP
     if file_name.endswith(".zip"):
         with tempfile.TemporaryDirectory() as tmpdir:
             zip_path = os.path.join(tmpdir, uploaded_file.name)
@@ -180,7 +174,6 @@ def read_uploaded_file(uploaded_file):
                 zip_ref.extractall(tmpdir)
                 extracted_files = zip_ref.namelist()
 
-            # Look for CSV
             for inner_file in extracted_files:
                 if inner_file.lower().endswith(".csv"):
                     csv_path = os.path.join(tmpdir, inner_file)
@@ -188,7 +181,6 @@ def read_uploaded_file(uploaded_file):
                     df = clean_columns(df)
                     return df, f"ZIP file loaded. Found CSV: {inner_file}"
 
-            # Look for Excel
             for inner_file in extracted_files:
                 if inner_file.lower().endswith(".xlsx") or inner_file.lower().endswith(".xls"):
                     excel_path = os.path.join(tmpdir, inner_file)
@@ -196,31 +188,22 @@ def read_uploaded_file(uploaded_file):
                     df = clean_columns(df)
                     return df, f"ZIP file loaded. Found Excel file: {inner_file}"
 
-            # Look for shapefile
             shp_files = [f for f in extracted_files if f.lower().endswith(".shp")]
 
             if shp_files:
                 if not GEOPANDAS_AVAILABLE:
-                    return None, (
-                        "ZIP contains a shapefile, but geopandas is not installed."
-                    )
+                    return None, "ZIP contains a shapefile, but geopandas is not installed."
 
                 shp_path = os.path.join(tmpdir, shp_files[0])
 
                 try:
-                    # Use pyogrio engine when available
                     try:
                         gdf = gpd.read_file(shp_path, engine="pyogrio")
                     except Exception:
                         gdf = gpd.read_file(shp_path)
 
-                    df = pd.DataFrame(gdf)
-
-                    if "geometry" in df.columns:
-                        df = df.drop(columns=["geometry"])
-
-                    df = clean_columns(df)
-                    return df, f"ZIP file loaded. Found shapefile: {shp_files[0]}"
+                    gdf = clean_columns(gdf)
+                    return gdf, f"ZIP file loaded. Found shapefile: {shp_files[0]}"
                 except Exception as e:
                     return None, f"Found shapefile but could not read it: {e}"
 
@@ -228,6 +211,16 @@ def read_uploaded_file(uploaded_file):
 
     return None, "Unsupported file type."
 
+def add_kpi(label, value, color="#f9fafb"):
+    st.markdown(
+        f"""
+        <div class="kpi-card">
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-value" style="color:{color};">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 # ---------------------------------
 # Upload section
@@ -255,7 +248,6 @@ st.markdown(
 )
 st.markdown('</div>', unsafe_allow_html=True)
 
-
 # ---------------------------------
 # Main processing
 # ---------------------------------
@@ -280,29 +272,30 @@ if n_file is not None and y_file is not None:
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ---------------------------------
-    # Previews
+    # Preview data
     # ---------------------------------
     preview_col1, preview_col2 = st.columns(2)
 
     with preview_col1:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.subheader("Nitrogen Prescription Data Preview")
-        st.dataframe(n_df.head(), use_container_width=True)
+        preview_n = pd.DataFrame(n_df).drop(columns=["geometry"], errors="ignore")
+        st.dataframe(preview_n.head(), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with preview_col2:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.subheader("Yield Data Preview")
-        st.dataframe(y_df.head(), use_container_width=True)
+        preview_y = pd.DataFrame(y_df).drop(columns=["geometry"], errors="ignore")
+        st.dataframe(preview_y.head(), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ---------------------------------
-    # Basic agronomy calculations
+    # Agronomy calculations
     # ---------------------------------
     n = n_df.copy()
     y = y_df.copy()
 
-    # Assumes DISTANCE and SWATHWIDTH are in feet
     SQFT_TO_ACRES = 1 / 43560
 
     if "DISTANCE" in n.columns and "SWATHWIDTH" in n.columns:
@@ -318,19 +311,25 @@ if n_file is not None and y_file is not None:
     merged = pd.DataFrame()
 
     if "Area_ac" in y.columns:
-        merged["Area_ac"] = y["Area_ac"].iloc[:min_len]
+        merged["Area_ac"] = y["Area_ac"].iloc[:min_len].values
 
     if "Yield" in y.columns:
-        merged["Yield"] = y["Yield"].iloc[:min_len]
+        merged["Yield"] = y["Yield"].iloc[:min_len].values
 
     if "AppliedRate" in n.columns:
-        merged["NitrogenRate"] = n["AppliedRate"].iloc[:min_len]
+        merged["NitrogenRate"] = n["AppliedRate"].iloc[:min_len].values
 
     if "Yield" in merged.columns and "NitrogenRate" in merged.columns:
         merged["N_Efficiency"] = merged["Yield"] / merged["NitrogenRate"]
 
+    # Keep geometry from yield layer if available, otherwise nitrogen layer
+    if "geometry" in y.columns:
+        merged["geometry"] = y["geometry"].iloc[:min_len].values
+    elif "geometry" in n.columns:
+        merged["geometry"] = n["geometry"].iloc[:min_len].values
+
     merged = merged.replace([float("inf"), -float("inf")], pd.NA)
-    merged = merged.dropna()
+    merged = merged.dropna(subset=["Area_ac", "Yield", "NitrogenRate", "N_Efficiency"])
 
     if merged.empty:
         st.error("The uploaded files were read, but the processed dataset is empty after cleaning.")
@@ -379,7 +378,7 @@ if n_file is not None and y_file is not None:
     ai_table["N Change (lb/ac)"] = ai_table["AI N Rate (lb/ac)"] - ai_table["N Rate (lb/ac)"]
 
     # ---------------------------------
-    # Rounded display copies
+    # Rounded display
     # ---------------------------------
     summary_display = summary.copy()
     ai_display = ai_table.copy()
@@ -402,51 +401,15 @@ if n_file is not None and y_file is not None:
     avg_n_change = ai_table["N Change (lb/ac)"].mean()
 
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-
     with kpi1:
-        st.markdown(
-            f"""
-            <div class="kpi-card">
-                <div class="kpi-label">Estimated Field Area</div>
-                <div class="kpi-value">{total_area:.1f} ac</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
+        add_kpi("Estimated Field Area", f"{total_area:.1f} ac")
     with kpi2:
-        st.markdown(
-            f"""
-            <div class="kpi-card">
-                <div class="kpi-label">Average Original N Rate</div>
-                <div class="kpi-value">{avg_original_n:.1f} lb/ac</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
+        add_kpi("Average Original N Rate", f"{avg_original_n:.1f} lb/ac")
     with kpi3:
-        st.markdown(
-            f"""
-            <div class="kpi-card">
-                <div class="kpi-label">Average AI N Rate</div>
-                <div class="kpi-value">{avg_ai_n:.1f} lb/ac</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
+        add_kpi("Average AI N Rate", f"{avg_ai_n:.1f} lb/ac")
     with kpi4:
         change_color = "#22c55e" if avg_n_change >= 0 else "#f97316"
-        st.markdown(
-            f"""
-            <div class="kpi-card">
-                <div class="kpi-label">Average N Change</div>
-                <div class="kpi-value" style="color:{change_color};">{avg_n_change:.1f} lb/ac</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        add_kpi("Average N Change", f"{avg_n_change:.1f} lb/ac", color=change_color)
 
     # ---------------------------------
     # Summary box
@@ -479,34 +442,20 @@ if n_file is not None and y_file is not None:
     )
 
     # ---------------------------------
-    # Charts
+    # Dropdown chart section
     # ---------------------------------
-    chart_col1, chart_col2 = st.columns(2)
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("View Nitrogen Rate by Yield Class")
 
-    with chart_col1:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("Average Yield by Yield Class")
+    view_option = st.selectbox(
+        "Choose chart view",
+        [
+            "Show Nitrogen Rate Comparison",
+            "Hide Chart"
+        ]
+    )
 
-        fig_yield = px.bar(
-            summary_display,
-            x="Yield Class",
-            y="Yield (bu/ac)",
-            text="Yield (bu/ac)"
-        )
-        fig_yield.update_traces(texttemplate="%{text:.1f}", textposition="outside")
-        fig_yield.update_layout(
-            height=420,
-            xaxis_title="Yield Class",
-            yaxis_title="Yield (bu/ac)",
-            margin=dict(l=20, r=20, t=20, b=20)
-        )
-        st.plotly_chart(fig_yield, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with chart_col2:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        st.subheader("Nitrogen Rate by Yield Class")
-
+    if view_option == "Show Nitrogen Rate Comparison":
         fig_n = go.Figure()
         fig_n.add_trace(
             go.Bar(
@@ -529,35 +478,17 @@ if n_file is not None and y_file is not None:
 
         fig_n.update_layout(
             barmode="group",
-            height=420,
+            height=430,
             xaxis_title="Yield Class",
             yaxis_title="Nitrogen Rate (lb/ac)",
             margin=dict(l=20, r=20, t=20, b=20)
         )
         st.plotly_chart(fig_n, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Nitrogen Change by Yield Class")
-
-    fig_change = px.bar(
-        ai_display,
-        x="Yield Class",
-        y="N Change (lb/ac)",
-        text="N Change (lb/ac)"
-    )
-    fig_change.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-    fig_change.update_layout(
-        height=380,
-        xaxis_title="Yield Class",
-        yaxis_title="N Change (lb/ac)",
-        margin=dict(l=20, r=20, t=20, b=20)
-    )
-    st.plotly_chart(fig_change, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ---------------------------------
-    # Side-by-side comparison tables
+    # Side-by-side tables
     # ---------------------------------
     st.subheader("Comparison: Agronomist vs AI Recommendation")
 
@@ -574,3 +505,88 @@ if n_file is not None and y_file is not None:
         st.markdown("### AI Recommendation")
         st.dataframe(ai_display, use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # ---------------------------------
+    # Heat maps
+    # ---------------------------------
+    if "geometry" in merged.columns:
+        st.subheader("Field Heat Maps")
+
+        try:
+            gmap = gpd.GeoDataFrame(merged.copy(), geometry="geometry", crs=getattr(y, "crs", None))
+
+            if gmap.crs is None:
+                gmap.set_crs(epsg=4326, inplace=True, allow_override=True)
+            else:
+                gmap = gmap.to_crs(epsg=4326)
+
+            # map AI changes to each row by yield class
+            change_lookup = dict(zip(ai_table["Yield Class"], ai_table["N Change (lb/ac)"]))
+            gmap["N Change (lb/ac)"] = gmap["YieldClass"].map(change_lookup)
+
+            # centroid points for display
+            gmap["lat"] = gmap.geometry.centroid.y
+            gmap["lon"] = gmap.geometry.centroid.x
+
+            map_col1, map_col2 = st.columns(2)
+
+            with map_col1:
+                st.markdown('<div class="section-card">', unsafe_allow_html=True)
+                st.markdown("### Yield Heat Map")
+
+                fig_yield_map = px.scatter_mapbox(
+                    gmap,
+                    lat="lat",
+                    lon="lon",
+                    color="Yield",
+                    color_continuous_scale="YlGn",
+                    zoom=12,
+                    height=500,
+                    hover_data={
+                        "Yield": True,
+                        "NitrogenRate": True,
+                        "Area_ac": True,
+                        "lat": False,
+                        "lon": False
+                    }
+                )
+                fig_yield_map.update_layout(
+                    mapbox_style="open-street-map",
+                    margin=dict(l=0, r=0, t=0, b=0)
+                )
+                st.plotly_chart(fig_yield_map, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            with map_col2:
+                st.markdown('<div class="section-card">', unsafe_allow_html=True)
+                st.markdown("### AI Nitrogen Adjustment Heat Map")
+                st.markdown(
+                    "Red areas suggest reducing nitrogen. Green areas suggest maintaining or increasing nitrogen."
+                )
+
+                fig_ai_map = px.scatter_mapbox(
+                    gmap,
+                    lat="lat",
+                    lon="lon",
+                    color="N Change (lb/ac)",
+                    color_continuous_scale="RdYlGn",
+                    zoom=12,
+                    height=500,
+                    hover_data={
+                        "Yield": True,
+                        "NitrogenRate": True,
+                        "N Change (lb/ac)": True,
+                        "Area_ac": True,
+                        "lat": False,
+                        "lon": False
+                    }
+                )
+                fig_ai_map.update_layout(
+                    mapbox_style="open-street-map",
+                    margin=dict(l=0, r=0, t=0, b=0)
+                )
+                st.plotly_chart(fig_ai_map, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+        except Exception as e:
+            st.warning(f"Heat maps could not be generated: {e}")
