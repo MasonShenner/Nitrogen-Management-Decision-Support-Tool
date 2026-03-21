@@ -252,24 +252,25 @@ def make_rate_range_labels(series, bins=6, decimals=1):
         label = f"{round(min_val, decimals)} lb/ac"
         return pd.Series([label] * len(series), index=series.index), [label]
 
-    edges = pd.Series(
-        [min_val + (max_val - min_val) * i / bins for i in range(bins + 1)]
-    ).round(decimals)
+    edges = []
+    step = (max_val - min_val) / bins
 
-    # ensure strictly increasing edges
+    for i in range(bins + 1):
+        edges.append(round(min_val + step * i, decimals))
+
     for i in range(1, len(edges)):
-        if edges.iloc[i] <= edges.iloc[i - 1]:
-            edges.iloc[i] = round(edges.iloc[i - 1] + (10 ** -decimals), decimals)
+        if edges[i] <= edges[i - 1]:
+            edges[i] = round(edges[i - 1] + (10 ** -decimals), decimals)
 
     labels = []
     for i in range(len(edges) - 1):
-        low = edges.iloc[i]
-        high = edges.iloc[i + 1]
+        low = edges[i]
+        high = edges[i + 1]
         labels.append(f"{low:.{decimals}f}–{high:.{decimals}f} lb/ac")
 
     categorized = pd.cut(
         s,
-        bins=edges.tolist(),
+        bins=edges,
         labels=labels,
         include_lowest=True,
         duplicates="drop"
@@ -352,13 +353,13 @@ if n_file is not None and y_file is not None:
     n = n_df.copy()
     y = y_df.copy()
 
-    SQFT_TO_ACRES = 1 / 43560
+    sqft_to_acres = 1 / 43560
 
     if "DISTANCE" in n.columns and "SWATHWIDTH" in n.columns:
-        n["Area_ac"] = n["DISTANCE"] * n["SWATHWIDTH"] * SQFT_TO_ACRES
+        n["Area_ac"] = n["DISTANCE"] * n["SWATHWIDTH"] * sqft_to_acres
 
     if "DISTANCE" in y.columns and "SWATHWIDTH" in y.columns:
-        y["Area_ac"] = y["DISTANCE"] * y["SWATHWIDTH"] * SQFT_TO_ACRES
+        y["Area_ac"] = y["DISTANCE"] * y["SWATHWIDTH"] * sqft_to_acres
 
     if "VRYIELDVOL" in y.columns:
         y["Yield"] = y["VRYIELDVOL"]
@@ -552,8 +553,40 @@ if n_file is not None and y_file is not None:
         st.markdown('</div>', unsafe_allow_html=True)
 
     with table_col2:
-            st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown("### AI Recommendation")
+        st.dataframe(ai_display, width="stretch", hide_index=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
+    # ---------------------------------
+    # Two-map field viewer
+    # ---------------------------------
+    if "geometry" in merged.columns and GEOPANDAS_AVAILABLE:
+        st.subheader("Field Map Viewer")
+
+        try:
+            gmap = gpd.GeoDataFrame(merged.copy(), geometry="geometry")
+
+            if gmap.crs is None:
+                gmap = gmap.set_crs(epsg=4326, allow_override=True)
+
+            gmap = gmap.to_crs(epsg=4326)
+            gmap["lon"] = gmap.geometry.x
+            gmap["lat"] = gmap.geometry.y
+
+            ai_rate_lookup = dict(zip(ai_table["Yield Class"], ai_table["AI N Rate (lb/ac)"]))
+            gmap["AI_N_Rate"] = gmap["YieldClass"].map(ai_rate_lookup)
+
+            gmap["Yield"] = pd.to_numeric(gmap["Yield"], errors="coerce")
+            gmap["NitrogenRate"] = pd.to_numeric(gmap["NitrogenRate"], errors="coerce")
+            gmap["AI_N_Rate"] = pd.to_numeric(gmap["AI_N_Rate"], errors="coerce")
+
+            gmap["DisplayYield"] = gmap["Yield"].round(1)
+            gmap["DisplayOriginalN"] = gmap["NitrogenRate"].round(1)
+            gmap["DisplayAIN"] = gmap["AI_N_Rate"].round(1)
+            gmap["DisplayClass"] = gmap["YieldClass"].astype(str)
+
+            st.markdown('<div class="section-card">', unsafe_allow_html=True)
             st.markdown("### Field Map")
 
             map_choice = st.selectbox(
@@ -564,7 +597,7 @@ if n_file is not None and y_file is not None:
             if map_choice == "Original Nitrogen Applied":
                 gmap["LegendRange"], range_order = make_rate_range_labels(gmap["NitrogenRate"], bins=6, decimals=1)
                 gmap = gmap.dropna(subset=["LegendRange"])
-                range_order = [r for r in range_order if str(r) != "nan"]
+                range_order = [r for r in range_order if str(r).lower() != "nan"]
 
                 map_title = "Original Nitrogen Applied Map"
                 map_note = "This map shows the nitrogen rate that was originally applied across the field."
@@ -574,64 +607,66 @@ if n_file is not None and y_file is not None:
             else:
                 gmap["LegendRange"], range_order = make_rate_range_labels(gmap["AI_N_Rate"], bins=6, decimals=1)
                 gmap = gmap.dropna(subset=["LegendRange"])
-                range_order = [r for r in range_order if str(r) != "nan"]
+                range_order = [r for r in range_order if str(r).lower() != "nan"]
 
                 map_title = "AI Recommended Nitrogen Rate Map"
                 map_note = "This map shows the AI-recommended nitrogen rate by field area."
                 hover_rate_label = "AI Rate"
                 custom_cols = ["DisplayAIN", "DisplayYield", "DisplayClass"]
 
-            st.markdown(f"### {map_title}")
-            st.markdown(map_note)
+            # Extra safety in case too few bins remain
+            if len(range_order) == 0:
+                st.warning("Map legend ranges could not be created from the available data.")
+            else:
+                st.markdown(f"### {map_title}")
+                st.markdown(map_note)
 
-            color_map = {
-                range_order[0]: "#ff0000",
-                range_order[1]: "#ff7a00" if len(range_order) > 1 else "#ff0000",
-                range_order[2]: "#ffd400" if len(range_order) > 2 else "#ff7a00",
-                range_order[3]: "#b7e000" if len(range_order) > 3 else "#ffd400",
-                range_order[4]: "#4fd000" if len(range_order) > 4 else "#b7e000",
-                range_order[5]: "#00a83a" if len(range_order) > 5 else "#4fd000",
-            }
+                palette = ["#ff0000", "#ff7a00", "#ffd400", "#b7e000", "#4fd000", "#00a83a"]
+                color_map = {}
+                for i, label in enumerate(range_order):
+                    color_map[label] = palette[min(i, len(palette) - 1)]
 
-            fig_map = px.scatter_map(
-                gmap,
-                lat="lat",
-                lon="lon",
-                color="LegendRange",
-                category_orders={"LegendRange": range_order},
-                color_discrete_map=color_map,
-                zoom=12,
-                height=650,
-                custom_data=custom_cols
-            )
-
-            fig_map.update_traces(
-                marker=dict(size=6, opacity=0.88),
-                hovertemplate=(
-                    f"<b>{hover_rate_label}:</b> " + "%{customdata[0]} lb/ac<br>"
-                    "<b>Yield:</b> %{customdata[1]} bu/ac<br>"
-                    "<b>Class:</b> %{customdata[2]}"
-                    "<extra></extra>"
+                fig_map = px.scatter_map(
+                    gmap,
+                    lat="lat",
+                    lon="lon",
+                    color="LegendRange",
+                    category_orders={"LegendRange": range_order},
+                    color_discrete_map=color_map,
+                    zoom=12,
+                    height=650,
+                    custom_data=custom_cols
                 )
-            )
 
-            fig_map.update_layout(
-                margin=dict(l=0, r=0, t=0, b=0),
-                legend_title_text="Nitrogen Rate",
-                legend=dict(
-                    orientation="v",
-                    yanchor="top",
-                    y=0.98,
-                    xanchor="left",
-                    x=1.01
+                fig_map.update_traces(
+                    marker=dict(size=6, opacity=0.88),
+                    hovertemplate=(
+                        f"<b>{hover_rate_label}:</b> " + "%{customdata[0]} lb/ac<br>"
+                        "<b>Yield:</b> %{customdata[1]} bu/ac<br>"
+                        "<b>Class:</b> %{customdata[2]}"
+                        "<extra></extra>"
+                    )
                 )
-            )
 
-            st.plotly_chart(
-                fig_map,
-                width="stretch",
-                config={"displayModeBar": False}
-            )
+                fig_map.update_layout(
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    legend_title_text="Nitrogen Rate",
+                    legend=dict(
+                        orientation="v",
+                        yanchor="top",
+                        y=0.98,
+                        xanchor="left",
+                        x=1.01
+                    )
+                )
+
+                st.plotly_chart(
+                    fig_map,
+                    width="stretch",
+                    config={"displayModeBar": False}
+                )
 
             st.markdown('</div>', unsafe_allow_html=True)
+
+        except Exception as e:
             st.warning(f"Field map could not be generated: {e}")
