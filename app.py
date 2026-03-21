@@ -1,8 +1,9 @@
-import streamlit as st
-import pandas as pd
+import os
 import zipfile
 import tempfile
-import os
+import numpy as np
+import pandas as pd
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -175,7 +176,6 @@ def read_uploaded_file(uploaded_file):
                 zip_ref.extractall(tmpdir)
                 extracted_files = zip_ref.namelist()
 
-            # CSV inside ZIP
             for inner_file in extracted_files:
                 if inner_file.lower().endswith(".csv"):
                     csv_path = os.path.join(tmpdir, inner_file)
@@ -183,7 +183,6 @@ def read_uploaded_file(uploaded_file):
                     df = clean_columns(df)
                     return df, f"ZIP file loaded. Found CSV: {inner_file}"
 
-            # Excel inside ZIP
             for inner_file in extracted_files:
                 if inner_file.lower().endswith(".xlsx") or inner_file.lower().endswith(".xls"):
                     excel_path = os.path.join(tmpdir, inner_file)
@@ -191,7 +190,6 @@ def read_uploaded_file(uploaded_file):
                     df = clean_columns(df)
                     return df, f"ZIP file loaded. Found Excel file: {inner_file}"
 
-            # Shapefile inside ZIP
             shp_files = [f for f in extracted_files if f.lower().endswith(".shp")]
 
             if shp_files:
@@ -228,21 +226,93 @@ def add_kpi(label, value, color="#f9fafb"):
     )
 
 
-def classify_n_change(x):
-    if pd.isna(x):
-        return "Unknown"
-    if x <= -10:
-        return "Reduce >10 lb/ac"
-    elif x <= -5:
-        return "Reduce 5–10 lb/ac"
-    elif x < 0:
-        return "Reduce 0–5 lb/ac"
-    elif x == 0:
-        return "No major change"
-    elif x <= 5:
-        return "Increase 0–5 lb/ac"
-    else:
-        return "Increase >5 lb/ac"
+def safe_qcut(series, q=5, labels=None):
+    try:
+        return pd.qcut(series, q=q, labels=labels, duplicates="drop")
+    except Exception:
+        ranks = series.rank(method="first")
+        return pd.qcut(ranks, q=q, labels=labels, duplicates="drop")
+
+
+def build_range_labels(series, unit="", bins_count=5, decimals=1):
+    clean = pd.to_numeric(series, errors="coerce").dropna()
+
+    if clean.empty:
+        return pd.Series(["Unknown"] * len(series), index=series.index), ["Unknown"]
+
+    min_val = float(clean.min())
+    max_val = float(clean.max())
+
+    if np.isclose(min_val, max_val):
+        single_label = f"{round(min_val, decimals)} {unit}".strip()
+        return pd.Series([single_label] * len(series), index=series.index), [single_label]
+
+    edges = np.linspace(min_val, max_val, bins_count + 1)
+    edges[0] = min_val
+    edges[-1] = max_val
+
+    labels = []
+    for i in range(len(edges) - 1):
+        low = round(edges[i], decimals)
+        high = round(edges[i + 1], decimals)
+        labels.append(f"{low} to {high} {unit}".strip())
+
+    binned = pd.cut(
+        series,
+        bins=edges,
+        labels=labels,
+        include_lowest=True,
+        duplicates="drop"
+    )
+
+    return binned.astype(str), labels
+
+
+def build_change_range_labels(series, unit="lb/ac", decimals=1):
+    clean = pd.to_numeric(series, errors="coerce").dropna()
+
+    if clean.empty:
+        return pd.Series(["Unknown"] * len(series), index=series.index), ["Unknown"]
+
+    min_val = float(clean.min())
+    max_val = float(clean.max())
+
+    if np.isclose(min_val, max_val):
+        single_label = f"{round(min_val, decimals)} {unit}".strip()
+        return pd.Series([single_label] * len(series), index=series.index), [single_label]
+
+    edges = np.linspace(min_val, max_val, 6)
+    labels = []
+    for i in range(len(edges) - 1):
+        low = round(edges[i], decimals)
+        high = round(edges[i + 1], decimals)
+        labels.append(f"{low} to {high} {unit}")
+
+    binned = pd.cut(
+        series,
+        bins=edges,
+        labels=labels,
+        include_lowest=True,
+        duplicates="drop"
+    )
+
+    return binned.astype(str), labels
+
+
+def format_hover_template(metric_label, metric_unit, extra_lines):
+    metric_unit_text = f" {metric_unit}" if metric_unit else ""
+    hover = (
+        "<b>Yield Class:</b> %{customdata[0]}<br>"
+        "<b>" + metric_label + ":</b> %{customdata[1]}" + metric_unit_text
+    )
+
+    for idx, line in enumerate(extra_lines, start=2):
+        hover += "<br><b>" + line["label"] + ":</b> %{customdata[" + str(idx) + "]}"
+        if line.get("unit"):
+            hover += " " + line["unit"]
+
+    hover += "<extra></extra>"
+    return hover
 
 
 # ---------------------------------
@@ -357,11 +427,10 @@ if n_file is not None and y_file is not None:
         st.error("The uploaded files were read, but the processed dataset is empty after cleaning.")
         st.stop()
 
-    merged["YieldClass"] = pd.qcut(
+    merged["YieldClass"] = safe_qcut(
         merged["Yield"],
-        5,
-        labels=["Very Low", "Low", "Medium", "High", "Very High"],
-        duplicates="drop"
+        q=5,
+        labels=["Very Low", "Low", "Medium", "High", "Very High"]
     )
 
     summary = merged.groupby("YieldClass", observed=False).agg({
@@ -526,10 +595,10 @@ if n_file is not None and y_file is not None:
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ---------------------------------
-    # AI adjustment point map
+    # Map section
     # ---------------------------------
     if "geometry" in merged.columns and GEOPANDAS_AVAILABLE:
-        st.subheader("AI Nitrogen Adjustment Field Map")
+        st.subheader("Field Map Viewer")
 
         try:
             gmap = gpd.GeoDataFrame(merged.copy(), geometry="geometry")
@@ -538,95 +607,169 @@ if n_file is not None and y_file is not None:
                 gmap = gmap.set_crs(epsg=4326, allow_override=True)
 
             gmap = gmap.to_crs(epsg=4326)
-
             gmap["lon"] = gmap.geometry.x
             gmap["lat"] = gmap.geometry.y
 
             change_lookup = dict(zip(ai_table["Yield Class"], ai_table["N Change (lb/ac)"]))
             ai_rate_lookup = dict(zip(ai_table["Yield Class"], ai_table["AI N Rate (lb/ac)"]))
+            avg_yield_lookup = dict(zip(ai_table["Yield Class"], ai_table["Yield (bu/ac)"]))
 
-            gmap["N Change (lb/ac)"] = gmap["YieldClass"].map(change_lookup)
-            gmap["AI N Rate (lb/ac)"] = gmap["YieldClass"].map(ai_rate_lookup)
+            gmap["AI_N_Rate"] = gmap["YieldClass"].map(ai_rate_lookup)
+            gmap["N_Change"] = gmap["YieldClass"].map(change_lookup)
+            gmap["Predicted_Yield"] = gmap["YieldClass"].map(avg_yield_lookup)
 
-            gmap["N Change Rounded"] = gmap["N Change (lb/ac)"].round(1)
-            gmap["Yield Rounded"] = gmap["Yield"].round(1)
-            gmap["NitrogenRate Rounded"] = gmap["NitrogenRate"].round(1)
-            gmap["AI N Rate Rounded"] = gmap["AI N Rate (lb/ac)"].round(1)
-            gmap["N Efficiency Rounded"] = gmap["N_Efficiency"].round(2)
-            gmap["Area Rounded"] = gmap["Area_ac"].round(2)
+            gmap["Yield"] = pd.to_numeric(gmap["Yield"], errors="coerce")
+            gmap["NitrogenRate"] = pd.to_numeric(gmap["NitrogenRate"], errors="coerce")
+            gmap["AI_N_Rate"] = pd.to_numeric(gmap["AI_N_Rate"], errors="coerce")
+            gmap["N_Efficiency"] = pd.to_numeric(gmap["N_Efficiency"], errors="coerce")
+            gmap["N_Change"] = pd.to_numeric(gmap["N_Change"], errors="coerce")
+            gmap["Predicted_Yield"] = pd.to_numeric(gmap["Predicted_Yield"], errors="coerce")
 
-            gmap["N Change Category"] = gmap["N Change (lb/ac)"].apply(classify_n_change)
+            map_col1, map_col2 = st.columns([1, 3])
 
-            category_order = [
-                "Reduce >10 lb/ac",
-                "Reduce 5–10 lb/ac",
-                "Reduce 0–5 lb/ac",
-                "No major change",
-                "Increase 0–5 lb/ac",
-                "Increase >5 lb/ac"
-            ]
+            with map_col1:
+                st.markdown('<div class="section-card">', unsafe_allow_html=True)
+                map_view = st.selectbox(
+                    "Select map view",
+                    [
+                        "Original Nitrogen Applied",
+                        "AI Recommended Nitrogen Rate",
+                        "Yield",
+                        "Nitrogen Efficiency",
+                        "Nitrogen Change"
+                    ]
+                )
+                st.markdown('</div>', unsafe_allow_html=True)
 
-            color_map = {
-                "Reduce >10 lb/ac": "#d73027",
-                "Reduce 5–10 lb/ac": "#fc8d59",
-                "Reduce 0–5 lb/ac": "#fee08b",
-                "No major change": "#d9d9d9",
-                "Increase 0–5 lb/ac": "#91cf60",
-                "Increase >5 lb/ac": "#1a9850"
-            }
+            if map_view == "Original Nitrogen Applied":
+                color_value = "NitrogenRate"
+                legend_title = "Original N Rate Range"
+                map_title = "Original Nitrogen Applied Map"
+                unit = "lb/ac"
+                range_col, range_order = build_range_labels(gmap[color_value], unit=unit, bins_count=5, decimals=1)
+                gmap["MapRange"] = range_col
+
+                hover_fields = [
+                    {"label": "Yield", "value_col": "Yield", "unit": "bu/ac", "decimals": 1},
+                    {"label": "Yield Class", "value_col": "YieldClass", "unit": "", "decimals": None}
+                ]
+                note_text = "This map shows the original nitrogen rate applied across the field."
+
+            elif map_view == "AI Recommended Nitrogen Rate":
+                color_value = "AI_N_Rate"
+                legend_title = "AI N Rate Range"
+                map_title = "AI Recommended Nitrogen Rate Map"
+                unit = "lb/ac"
+                range_col, range_order = build_range_labels(gmap[color_value], unit=unit, bins_count=5, decimals=1)
+                gmap["MapRange"] = range_col
+
+                hover_fields = [
+                    {"label": "Original N Rate", "value_col": "NitrogenRate", "unit": "lb/ac", "decimals": 1},
+                    {"label": "Yield Class", "value_col": "YieldClass", "unit": "", "decimals": None}
+                ]
+                note_text = "This map shows the AI-generated nitrogen rate that could be applied by area."
+
+            elif map_view == "Yield":
+                color_value = "Yield"
+                legend_title = "Yield Range"
+                map_title = "Yield Map"
+                unit = "bu/ac"
+                range_col, range_order = build_range_labels(gmap[color_value], unit=unit, bins_count=5, decimals=1)
+                gmap["MapRange"] = range_col
+
+                hover_fields = [
+                    {"label": "Original N Rate", "value_col": "NitrogenRate", "unit": "lb/ac", "decimals": 1},
+                    {"label": "Yield Class", "value_col": "YieldClass", "unit": "", "decimals": None}
+                ]
+                note_text = "This map shows harvested yield by point across the field."
+
+            elif map_view == "Nitrogen Efficiency":
+                color_value = "N_Efficiency"
+                legend_title = "N Efficiency Range"
+                map_title = "Nitrogen Efficiency Map"
+                unit = ""
+                range_col, range_order = build_range_labels(gmap[color_value], unit=unit, bins_count=5, decimals=2)
+                gmap["MapRange"] = range_col
+
+                hover_fields = [
+                    {"label": "Yield", "value_col": "Yield", "unit": "bu/ac", "decimals": 1},
+                    {"label": "Original N Rate", "value_col": "NitrogenRate", "unit": "lb/ac", "decimals": 1}
+                ]
+                note_text = "This map shows how efficiently nitrogen performed across different parts of the field."
+
+            else:
+                color_value = "N_Change"
+                legend_title = "N Change Range"
+                map_title = "Nitrogen Change Map"
+                unit = "lb/ac"
+                range_col, range_order = build_change_range_labels(gmap[color_value], unit=unit, decimals=1)
+                gmap["MapRange"] = range_col
+
+                hover_fields = [
+                    {"label": "Original N Rate", "value_col": "NitrogenRate", "unit": "lb/ac", "decimals": 1},
+                    {"label": "AI N Rate", "value_col": "AI_N_Rate", "unit": "lb/ac", "decimals": 1}
+                ]
+                note_text = "This map shows the difference between the original rate and the AI recommended rate."
+
+            # Build clean display values for hover
+            primary_display_col = "PrimaryDisplayValue"
+            if unit:
+                gmap[primary_display_col] = gmap[color_value].round(1)
+            else:
+                gmap[primary_display_col] = gmap[color_value].round(2)
+
+            custom_data_cols = ["YieldClass", primary_display_col]
+            extra_hover_defs = []
+
+            for field in hover_fields:
+                col_name = f"hover_{field['label'].replace(' ', '_')}"
+                if field["decimals"] is None:
+                    gmap[col_name] = gmap[field["value_col"]].astype(str)
+                else:
+                    gmap[col_name] = pd.to_numeric(gmap[field["value_col"]], errors="coerce").round(field["decimals"])
+                custom_data_cols.append(col_name)
+                extra_hover_defs.append({"label": field["label"], "unit": field["unit"]})
+
+            # Color palette
+            if map_view == "Nitrogen Change":
+                color_sequence = px.colors.diverging.RdYlGn
+            elif map_view == "Yield":
+                color_sequence = px.colors.sequential.YlGn
+            elif map_view == "Nitrogen Efficiency":
+                color_sequence = px.colors.sequential.Tealgrn
+            else:
+                color_sequence = px.colors.sequential.Blues
 
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
-            st.markdown("### AI Nitrogen Adjustment Map")
-            st.markdown(
-                "Red areas suggest reducing nitrogen. Green areas suggest maintaining or slightly increasing nitrogen."
-            )
+            st.markdown(f"### {map_title}")
+            st.markdown(note_text)
 
             fig_ai_map = px.scatter_map(
                 gmap,
                 lat="lat",
                 lon="lon",
-                color="N Change Category",
-                category_orders={"N Change Category": category_order},
-                color_discrete_map=color_map,
+                color="MapRange",
+                category_orders={"MapRange": range_order},
+                color_discrete_sequence=color_sequence,
                 zoom=12,
                 height=650,
-                hover_data={
-                    "YieldClass": True,
-                    "Yield Rounded": True,
-                    "NitrogenRate Rounded": True,
-                    "AI N Rate Rounded": True,
-                    "N Efficiency Rounded": True,
-                    "N Change Rounded": True,
-                    "Area Rounded": True,
-                    "N Change Category": True,
-                    "Yield": False,
-                    "NitrogenRate": False,
-                    "AI N Rate (lb/ac)": False,
-                    "N_Efficiency": False,
-                    "N Change (lb/ac)": False,
-                    "Area_ac": False,
-                    "lat": False,
-                    "lon": False
-                }
+                custom_data=custom_data_cols
+            )
+
+            hover_template = format_hover_template(
+                metric_label=map_view,
+                metric_unit=unit,
+                extra_lines=extra_hover_defs
             )
 
             fig_ai_map.update_traces(
-                marker=dict(size=7, opacity=0.75),
-                hovertemplate=(
-                    "<b>Yield Class:</b> %{customdata[0]}<br>"
-                    "<b>Yield:</b> %{customdata[1]} bu/ac<br>"
-                    "<b>Original N Rate:</b> %{customdata[2]} lb/ac<br>"
-                    "<b>AI N Rate:</b> %{customdata[3]} lb/ac<br>"
-                    "<b>N Efficiency:</b> %{customdata[4]}<br>"
-                    "<b>N Change:</b> %{customdata[5]} lb/ac<br>"
-                    "<b>Area:</b> %{customdata[6]} ac<br>"
-                    "<b>Adjustment:</b> %{customdata[7]}<extra></extra>"
-                )
+                marker=dict(size=6, opacity=0.78),
+                hovertemplate=hover_template
             )
 
             fig_ai_map.update_layout(
                 margin=dict(l=0, r=0, t=0, b=0),
-                legend_title_text="N Adjustment"
+                legend_title_text=legend_title
             )
 
             st.plotly_chart(
@@ -637,4 +780,4 @@ if n_file is not None and y_file is not None:
             st.markdown('</div>', unsafe_allow_html=True)
 
         except Exception as e:
-            st.warning(f"AI adjustment map could not be generated: {e}")
+            st.warning(f"Field map could not be generated: {e}")
