@@ -593,17 +593,24 @@ if n_file is not None and y_file is not None:
             )
 
             if map_choice == "Original Nitrogen Applied":
-                gmap["LegendRange"], range_order = make_rate_range_labels(gmap["NitrogenRate"], bins=6, decimals=1)
-                map_title = "Original Nitrogen Applied Map"
-                map_note = "This map shows the nitrogen rate that was originally applied across the field."
-                hover_rate_label = "N Applied"
-                custom_cols = ["DisplayOriginalN", "DisplayYield", "DisplayClass"]
-            else:
-                gmap["LegendRange"], range_order = make_rate_range_labels(gmap["AI_N_Rate"], bins=6, decimals=1)
-                map_title = "AI Recommended Nitrogen Rate Map"
-                map_note = "This map shows the AI-recommended nitrogen rate by field area."
-                hover_rate_label = "AI Rate"
-                custom_cols = ["DisplayAIN", "DisplayYield", "DisplayClass"]
+    gmap["LegendRange"], range_order = make_rate_range_labels(gmap["NitrogenRate"], bins=6, decimals=1)
+    gmap = gmap.dropna(subset=["LegendRange"])
+    range_order = [r for r in range_order if str(r) != "nan"]
+
+    map_title = "Original Nitrogen Applied Map"
+    map_note = "This map shows the nitrogen rate that was originally applied across the field."
+    hover_rate_label = "N Applied"
+    custom_cols = ["DisplayOriginalN", "DisplayYield", "DisplayClass"]
+
+else:
+    gmap["LegendRange"], range_order = make_rate_range_labels(gmap["AI_N_Rate"], bins=6, decimals=1)
+    gmap = gmap.dropna(subset=["LegendRange"])
+    range_order = [r for r in range_order if str(r) != "nan"]
+
+    map_title = "AI Recommended Nitrogen Rate Map"
+    map_note = "This map shows the AI-recommended nitrogen rate by field area."
+    hover_rate_label = "AI Rate"
+    custom_cols = ["DisplayAIN", "DisplayYield", "DisplayClass"]
 
             st.markdown(f"### {map_title}")
             st.markdown(map_note)
