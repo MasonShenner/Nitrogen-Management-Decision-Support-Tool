@@ -134,7 +134,7 @@ st.markdown(
 st.markdown(
     """
     <div class="hero-box">
-        <div class="hero-title">Agronomy AI Decision Support Tool</div>
+        <div class="hero-title">AI Nitrogen Management Decision Support Tool - Mason Shenner, Capstone Project 2026</div>
         <div class="hero-subtitle">
             Upload nitrogen prescription and yield data to compare original agronomist decisions
             with AI-assisted nitrogen recommendations.
