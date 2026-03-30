@@ -139,7 +139,7 @@ st.markdown(
             Upload nitrogen prescription and yield data to compare original agronomist decisions
             with AI-assisted nitrogen recommendations.
         </div>
-        <div class="crop-tag">Crop Type: CWRS (Canada Western Red Spring Wheat)</div>
+        <div class="crop-tag">Crop Type: CWRS Variety:AAC Wheatland VB</div>
     </div>
     """,
     unsafe_allow_html=True
