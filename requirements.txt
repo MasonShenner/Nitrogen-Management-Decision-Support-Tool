@@ -4,4 +4,3 @@ geopandas
 pyogrio
 openpyxl
 plotly
-anthropic
